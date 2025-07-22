@@ -1,18 +1,34 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/tristenkelly/chirpy/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
+}
+
+type chirpResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -35,14 +51,127 @@ func (cfg *apiConfig) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
+	if cfg.platform == "dev" {
+		cfg.db.ResetChirps(r.Context())
+		cfg.db.ResetUsers(r.Context())
+		w.WriteHeader(200)
+		w.Write([]byte("reset users\n"))
+	} else {
+		w.WriteHeader(403)
+	}
 }
 
-func validChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	type paramters struct {
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := paramters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("error decoding json")
+		w.WriteHeader(500)
+		return
+	}
+
+	type userResponse struct {
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+	currentTime := time.Now()
+	dbParams := database.CreateUserParams{
+		ID:        uuid.New(),
+		CreatedAt: currentTime,
+		UpdatedAt: currentTime,
+		Email:     params.Email,
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), dbParams)
+	if err != nil {
+		log.Printf("error creating user %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	returnUser := userResponse{
+		Id:         user.ID,
+		Created_at: user.CreatedAt,
+		Updated_at: user.UpdatedAt,
+		Email:      user.Email,
+	}
+
+	val, err := json.Marshal(returnUser)
+	if err != nil {
+		log.Printf("error marshaling json %v", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(201)
+	w.Write(val)
+
+}
+
+func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
+	data, err := cfg.db.GetAllChirps(r.Context())
+	if err != nil {
+		log.Printf("error getting all chirps %v", err)
+	}
+	var apiChirp []chirpResponse
+	for _, chirp := range data {
+		apiChirp = append(apiChirp, chirpResponse{
+			ID:        chirp.ID,
+			Body:      chirp.Body,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			UserID:    chirp.UserID,
+		})
+	}
+	val, err := json.Marshal(apiChirp)
+	if err != nil {
+		log.Printf("error marshaling chirp data %v", err)
+	}
+	w.WriteHeader(200)
+	w.Write(val)
+}
+
+func (cfg *apiConfig) getChirp(w http.ResponseWriter, r *http.Request) {
+	chirpID := r.PathValue("chirpID")
+	chirpUUID, err := uuid.Parse(chirpID)
+	if err != nil {
+		log.Printf("error converting ID to UUID %v", err)
+	}
+	data, err := cfg.db.GetChirp(r.Context(), chirpUUID)
+	if err != nil {
+		log.Printf("error getting chirp %v", err)
+		w.WriteHeader(404)
+		return
+	}
+	validChirp := chirpResponse{
+		ID:        data.ID,
+		CreatedAt: data.CreatedAt,
+		UpdatedAt: data.UpdatedAt,
+		Body:      data.Body,
+		UserID:    data.UserID,
+	}
+	val, err := json.Marshal(validChirp)
+	if err != nil {
+		log.Printf("error marshaling chirp data %v", err)
+	}
+	w.WriteHeader(200)
+	w.Write(val)
+}
+
+func (cfg *apiConfig) validChirp(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	type paramaters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -85,13 +214,31 @@ func validChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if respBodyValid.Valid {
-		val, err := json.Marshal(cleanBody)
+		chirpParams := database.CreateChirpParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Body:      cleanBody.Cleaned_Body,
+			UserID:    params.UserID,
+		}
+		chirp, err := cfg.db.CreateChirp(r.Context(), chirpParams)
+		if err != nil {
+			log.Printf("error creating chirp %v", err)
+		}
+		validChirpResponse := chirpResponse{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		}
+		val, err := json.Marshal(validChirpResponse)
 		if err != nil {
 			log.Printf("Error marshalling JSON: %s", err)
 			w.WriteHeader(500)
 			return
 		}
-		w.WriteHeader(200)
+		w.WriteHeader(201)
 		w.Write(val)
 	} else {
 		val, err := json.Marshal(respError)
@@ -122,7 +269,17 @@ func filterText(text string) string {
 }
 
 func main() {
-
+	envErr := godotenv.Load()
+	if envErr != nil {
+		log.Fatal("failed to load env variables")
+	}
+	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+	db, err2 := sql.Open("postgres", dbURL)
+	if err2 != nil {
+		log.Fatal("error making SQL connection")
+	}
+	dbQueries := database.New(db)
 	mux := http.NewServeMux()
 
 	server := &http.Server{
@@ -130,16 +287,22 @@ func main() {
 		Handler: mux,
 	}
 
-	apiCfg := &apiConfig{}
+	apiCfg := &apiConfig{
+		db:       dbQueries,
+		platform: platform,
+	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
 	mux.HandleFunc("GET /api/healthz", health)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.reset)
-	mux.HandleFunc("POST /api/validate_chirp", validChirp)
+	mux.HandleFunc("POST /api/users", apiCfg.createUser)
+	mux.HandleFunc("POST /api/chirps", apiCfg.validChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirp)
 
 	err := http.ListenAndServe(server.Addr, server.Handler)
 	if err != nil {
-		log.Fatal("error starting server")
+		log.Fatal("error starting server", err)
 	}
 }
