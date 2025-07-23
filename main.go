@@ -437,6 +437,88 @@ func (cfg *apiConfig) revokeRefreshToken(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(204)
 }
 
+func (cfg *apiConfig) changePassword(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("error getting token: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		log.Printf("token not valid: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	type paramaters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	params := paramaters{}
+	decoder := json.NewDecoder(r.Body)
+	err2 := decoder.Decode(&params)
+	if err2 != nil {
+		log.Printf("error decoding params: %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	newPass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("error hashing password: %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	rqParams := database.ChangePasswordParams{
+		ID:             userID,
+		Email:          params.Email,
+		HashedPassword: newPass,
+		UpdatedAt:      time.Now(),
+	}
+
+	type userResource struct {
+		ID         uuid.UUID `json:"id"`
+		Email      string    `json:"email"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+	}
+
+	err3 := cfg.db.ChangePassword(r.Context(), rqParams)
+	if err3 != nil {
+		log.Printf("error changing password %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	user, err := cfg.db.GetHashedPass(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("error getting user info %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	returnUser := userResource{
+		ID:         user.ID,
+		Email:      user.Email,
+		Created_at: user.CreatedAt,
+		Updated_at: user.UpdatedAt,
+	}
+
+	val, err := json.Marshal(returnUser)
+	if err != nil {
+		log.Printf("error marshalling json %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	w.WriteHeader(200)
+	w.Write(val)
+}
+
 func filterText(text string) string {
 	sliceStr := strings.Split(text, " ")
 	badWords := map[string]bool{
@@ -490,6 +572,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.getRefreshToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshToken)
+	mux.HandleFunc("PUT /api/users", apiCfg.changePassword)
 
 	err := http.ListenAndServe(server.Addr, server.Handler)
 	if err != nil {

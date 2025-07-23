@@ -12,6 +12,31 @@ import (
 	"github.com/google/uuid"
 )
 
+const changePassword = `-- name: ChangePassword :exec
+UPDATE users
+SET email = $2,
+hashed_password = $3,
+updated_at = $4
+WHERE id = $1
+`
+
+type ChangePasswordParams struct {
+	ID             uuid.UUID
+	Email          string
+	HashedPassword string
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) ChangePassword(ctx context.Context, arg ChangePasswordParams) error {
+	_, err := q.db.ExecContext(ctx, changePassword,
+		arg.ID,
+		arg.Email,
+		arg.HashedPassword,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, created_at, updated_at, email, hashed_password)
 VALUES (
