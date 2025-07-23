@@ -1,1 +1,2 @@
 .env
+internal/auth/auth_test.go

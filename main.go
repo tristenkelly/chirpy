@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/tristenkelly/chirpy/internal/auth"
 	"github.com/tristenkelly/chirpy/internal/database"
 )
 
@@ -65,7 +66,8 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	type paramters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -84,11 +86,18 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		Email      string    `json:"email"`
 	}
 	currentTime := time.Now()
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("error hashing password %v", err)
+		w.WriteHeader(500)
+		return
+	}
 	dbParams := database.CreateUserParams{
-		ID:        uuid.New(),
-		CreatedAt: currentTime,
-		UpdatedAt: currentTime,
-		Email:     params.Email,
+		ID:             uuid.New(),
+		CreatedAt:      currentTime,
+		UpdatedAt:      currentTime,
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
 	}
 
 	user, err := cfg.db.CreateUser(r.Context(), dbParams)
@@ -252,6 +261,57 @@ func (cfg *apiConfig) validChirp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+	type paramaters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	params := paramaters{}
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("error decoding json for login %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	user, err := cfg.db.GetHashedPass(r.Context(), params.Email)
+	if err != nil {
+		log.Printf("error getting user in login query %v", err)
+	}
+
+	type returnVals struct {
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+
+	returnuserVals := returnVals{
+		Id:         user.ID,
+		Created_at: user.CreatedAt,
+		Updated_at: user.UpdatedAt,
+		Email:      user.Email,
+	}
+
+	err2 := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err2 != nil {
+		log.Println("incorrect password")
+		w.WriteHeader(401)
+		return
+	}
+
+	val, err := json.Marshal(returnuserVals)
+	if err != nil {
+		log.Println("error marshalling login data")
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(200)
+	w.Write(val)
+}
+
 func filterText(text string) string {
 	sliceStr := strings.Split(text, " ")
 	badWords := map[string]bool{
@@ -300,6 +360,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.validChirp)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirp)
+	mux.HandleFunc("POST /api/login", apiCfg.handleLogin)
 
 	err := http.ListenAndServe(server.Addr, server.Handler)
 	if err != nil {
