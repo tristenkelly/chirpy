@@ -10,7 +10,7 @@ VALUES (
 RETURNING *;
 
 -- name: ResetUsers :exec
-TRUNCATE chirps, users;
+TRUNCATE refresh_tokens, chirps, users;
 
 -- name: GetHashedPass :one
 SELECT email, hashed_password, id, created_at, updated_at

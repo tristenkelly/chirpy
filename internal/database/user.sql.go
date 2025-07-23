@@ -79,7 +79,7 @@ func (q *Queries) GetHashedPass(ctx context.Context, email string) (GetHashedPas
 }
 
 const resetUsers = `-- name: ResetUsers :exec
-TRUNCATE chirps, users
+TRUNCATE refresh_tokens, chirps, users
 `
 
 func (q *Queries) ResetUsers(ctx context.Context) error {

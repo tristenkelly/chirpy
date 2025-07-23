@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -25,18 +27,18 @@ func HashPassword(password string) (string, error) {
 func CheckPasswordHash(password, hash string) error {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	if err != nil {
-		log.Printf("hash and password don't matchh %v", err)
+		log.Printf("hash and password don't match %v", err)
 		return err
 	}
 	return nil
 }
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
 	hmacSecret := []byte(os.Getenv("SECRET"))
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Issuer:    "chirpy",
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 		Subject:   userID.String(),
 	})
 
@@ -54,14 +56,18 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return []byte(tokenSecret), nil
 	})
 	if err != nil {
-		log.Printf("token not valid %v", err)
-		return uuid.Max, err
+		log.Printf("JWT parsing failed: %v", err)
+		return uuid.UUID{}, err
 	}
-
-	userID, err := uuid.Parse(claims.Subject)
+	userIDString, err := claims.GetSubject()
+	if err != nil {
+		log.Printf("error getting subject from claim: %v", err)
+		return uuid.UUID{}, err
+	}
+	userID, err := uuid.Parse(userIDString)
 	if err != nil {
 		log.Printf("error converting uuid to string")
-		return uuid.Max, err
+		return uuid.UUID{}, err
 	}
 	return userID, nil
 }
@@ -74,4 +80,15 @@ func GetBearerToken(headers http.Header) (string, error) {
 	token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 
 	return token, nil
+}
+
+func MakeRefreshToken() (string, error) {
+	randByte := make([]byte, 32)
+	_, err := rand.Read(randByte)
+	if err != nil {
+		log.Printf("issue randomizing byte value %v", err)
+		return "", err
+	}
+	refTokenString := hex.EncodeToString(randByte)
+	return refTokenString, nil
 }
