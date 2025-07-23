@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	secret         string
 }
 
 type chirpResponse struct {
@@ -222,13 +223,27 @@ func (cfg *apiConfig) validChirp(w http.ResponseWriter, r *http.Request) {
 		respError.Error = "Chirp is too long"
 	}
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("error getting bearer token %v", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		log.Printf("JWT not valid: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
 	if respBodyValid.Valid {
 		chirpParams := database.CreateChirpParams{
 			ID:        uuid.New(),
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Body:      cleanBody.Cleaned_Body,
-			UserID:    params.UserID,
+			UserID:    userID,
 		}
 		chirp, err := cfg.db.CreateChirp(r.Context(), chirpParams)
 		if err != nil {
@@ -263,8 +278,9 @@ func (cfg *apiConfig) validChirp(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type paramaters struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds"`
 	}
 
 	params := paramaters{}
@@ -276,9 +292,22 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if params.ExpiresInSeconds == nil {
+		var expirationTime int = 3600
+		params.ExpiresInSeconds = &expirationTime
+	} else if *params.ExpiresInSeconds >= 3600 {
+		*params.ExpiresInSeconds = 3600
+	}
+
 	user, err := cfg.db.GetHashedPass(r.Context(), params.Email)
 	if err != nil {
 		log.Printf("error getting user in login query %v", err)
+	}
+	token, err := auth.MakeJWT(user.ID, cfg.secret, (time.Duration(*params.ExpiresInSeconds) * time.Second))
+	if err != nil {
+		log.Printf("error creating JWT %v", err)
+		w.WriteHeader(500)
+		return
 	}
 
 	type returnVals struct {
@@ -286,6 +315,7 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
 		Email      string    `json:"email"`
+		Token      string    `json:"token"`
 	}
 
 	returnuserVals := returnVals{
@@ -293,6 +323,7 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Created_at: user.CreatedAt,
 		Updated_at: user.UpdatedAt,
 		Email:      user.Email,
+		Token:      token,
 	}
 
 	err2 := auth.CheckPasswordHash(params.Password, user.HashedPassword)
@@ -335,6 +366,7 @@ func main() {
 	}
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 	db, err2 := sql.Open("postgres", dbURL)
 	if err2 != nil {
 		log.Fatal("error making SQL connection")
@@ -350,6 +382,7 @@ func main() {
 	apiCfg := &apiConfig{
 		db:       dbQueries,
 		platform: platform,
+		secret:   secret,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))

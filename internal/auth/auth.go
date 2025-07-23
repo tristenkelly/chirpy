@@ -1,13 +1,15 @@
 package auth
 
 import (
+	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,11 +32,6 @@ func CheckPasswordHash(password, hash string) error {
 }
 
 func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
-	err := godotenv.Load("../../.env")
-	if err != nil {
-		log.Println("error loading secret")
-		return "", err
-	}
 	hmacSecret := []byte(os.Getenv("SECRET"))
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Issuer:    "chirpy",
@@ -67,4 +64,14 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return uuid.Max, err
 	}
 	return userID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	if !strings.HasPrefix(headers.Get("Authorization"), "Bearer ") {
+		log.Println("invalid auth header format given")
+		return "", fmt.Errorf("invalid auth header")
+	}
+	token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
+
+	return token, nil
 }
