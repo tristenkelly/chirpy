@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	secret         string
+	polka          string
 }
 
 type chirpResponse struct {
@@ -129,9 +131,25 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
+	s := r.URL.Query().Get("author_id")
+	sortType := r.URL.Query().Get("sort")
 	data, err := cfg.db.GetAllChirps(r.Context())
 	if err != nil {
 		log.Printf("error getting all chirps %v", err)
+	}
+	if s != "" {
+		userID, err := uuid.Parse(s)
+		if err != nil {
+			log.Printf("error parsing uuid: %v", err)
+			w.WriteHeader(500)
+			return
+		}
+		data, err = cfg.db.GetChirpsForUser(r.Context(), userID)
+		if err != nil {
+			log.Printf("error getting chirps for author: %v", err)
+			w.WriteHeader(500)
+			return
+		}
 	}
 	var apiChirp []chirpResponse
 	for _, chirp := range data {
@@ -141,6 +159,15 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
 			UserID:    chirp.UserID,
+		})
+	}
+	if sortType == "desc" {
+		sort.Slice(apiChirp, func(arg1 int, arg2 int) bool {
+			if apiChirp[arg1].CreatedAt.After(apiChirp[arg2].CreatedAt) {
+				return true
+			} else {
+				return false
+			}
 		})
 	}
 	val, err := json.Marshal(apiChirp)
@@ -574,6 +601,18 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) upgradeUser(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetAPIToken(r.Header)
+	if err != nil {
+		log.Printf("error getting token: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	if token != cfg.polka {
+		w.WriteHeader(401)
+		return
+	}
+
 	type paramaters struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -582,8 +621,8 @@ func (cfg *apiConfig) upgradeUser(w http.ResponseWriter, r *http.Request) {
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := paramaters{}
-	err := decoder.Decode(&params)
-	if err != nil {
+	err2 := decoder.Decode(&params)
+	if err2 != nil {
 		log.Printf("error decoding json: %V", err)
 		w.WriteHeader(500)
 		return
@@ -605,8 +644,8 @@ func (cfg *apiConfig) upgradeUser(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   time.Now(),
 	}
 
-	err2 := cfg.db.UpgradeUser(r.Context(), rqParams)
-	if err2 != nil {
+	err3 := cfg.db.UpgradeUser(r.Context(), rqParams)
+	if err3 != nil {
 		log.Printf("error getting user in table: %v", err)
 		w.WriteHeader(404)
 		return
@@ -638,6 +677,7 @@ func main() {
 	}
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	polka := os.Getenv("POLKA_KEY")
 	secret := os.Getenv("SECRET")
 	db, err2 := sql.Open("postgres", dbURL)
 	if err2 != nil {
@@ -655,6 +695,7 @@ func main() {
 		db:       dbQueries,
 		platform: platform,
 		secret:   secret,
+		polka:    polka,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
