@@ -81,10 +81,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type userResponse struct {
-		Id         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
+		Id          uuid.UUID `json:"id"`
+		Created_at  time.Time `json:"created_at"`
+		Updated_at  time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 	currentTime := time.Now()
 	hashedPassword, err := auth.HashPassword(params.Password)
@@ -109,10 +110,11 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	returnUser := userResponse{
-		Id:         user.ID,
-		Created_at: user.CreatedAt,
-		Updated_at: user.UpdatedAt,
-		Email:      user.Email,
+		Id:          user.ID,
+		Created_at:  user.CreatedAt,
+		Updated_at:  user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	val, err := json.Marshal(returnUser)
@@ -326,6 +328,7 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Created_at    time.Time `json:"created_at"`
 		Updated_at    time.Time `json:"updated_at"`
 		Email         string    `json:"email"`
+		IsChirpyRed   bool      `json:"is_chirpy_red"`
 		Token         string    `json:"token"`
 		Refresh_token string    `json:"refresh_token"`
 	}
@@ -335,6 +338,7 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Created_at:    user.CreatedAt,
 		Updated_at:    user.UpdatedAt,
 		Email:         user.Email,
+		IsChirpyRed:   user.IsChirpyRed,
 		Token:         token,
 		Refresh_token: refreshToken,
 	}
@@ -481,10 +485,11 @@ func (cfg *apiConfig) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type userResource struct {
-		ID         uuid.UUID `json:"id"`
-		Email      string    `json:"email"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
+		ID          uuid.UUID `json:"id"`
+		Email       string    `json:"email"`
+		Created_at  time.Time `json:"created_at"`
+		Updated_at  time.Time `json:"updated_at"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 
 	err3 := cfg.db.ChangePassword(r.Context(), rqParams)
@@ -502,10 +507,11 @@ func (cfg *apiConfig) changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	returnUser := userResource{
-		ID:         user.ID,
-		Email:      user.Email,
-		Created_at: user.CreatedAt,
-		Updated_at: user.UpdatedAt,
+		ID:          user.ID,
+		Email:       user.Email,
+		Created_at:  user.CreatedAt,
+		Updated_at:  user.UpdatedAt,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	val, err := json.Marshal(returnUser)
@@ -517,6 +523,96 @@ func (cfg *apiConfig) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(200)
 	w.Write(val)
+}
+
+func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("error getting token: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		log.Printf("token not valid: %v", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	chirpID := r.PathValue("chirpID")
+	chirpUUID, err := uuid.Parse(chirpID)
+	if err != nil {
+		log.Printf("error converting ID to UUID %v", err)
+	}
+
+	chirp, err2 := cfg.db.GetChirp(r.Context(), chirpUUID)
+	if err2 != nil {
+		log.Println("couldn't find chirp")
+		w.WriteHeader(404)
+		return
+	}
+
+	rqParams := database.DeleteChirpParams{
+		ID:     chirpUUID,
+		UserID: userID,
+	}
+
+	if chirp.UserID == userID {
+		err3 := cfg.db.DeleteChirp(r.Context(), rqParams)
+		if err != nil {
+			log.Printf("error deleting chirp %v", err3)
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(204)
+		w.Write([]byte("chirp deleted"))
+	} else {
+		w.WriteHeader(403)
+		w.Write([]byte("not the author of this chirp!"))
+	}
+}
+
+func (cfg *apiConfig) upgradeUser(w http.ResponseWriter, r *http.Request) {
+	type paramaters struct {
+		Event string `json:"event"`
+		Data  struct {
+			Userid string `json:"user_id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := paramaters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("error decoding json: %V", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	userID, err := uuid.Parse(params.Data.Userid)
+	if err != nil {
+		log.Printf("error parsing string into uuid: %v", err)
+		w.WriteHeader(500)
+		return
+	}
+	rqParams := database.UpgradeUserParams{
+		ID:          userID,
+		IsChirpyRed: true,
+		UpdatedAt:   time.Now(),
+	}
+
+	err2 := cfg.db.UpgradeUser(r.Context(), rqParams)
+	if err2 != nil {
+		log.Printf("error getting user in table: %v", err)
+		w.WriteHeader(404)
+		return
+	} else {
+		w.WriteHeader(204)
+	}
 }
 
 func filterText(text string) string {
@@ -573,6 +669,8 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", apiCfg.getRefreshToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshToken)
 	mux.HandleFunc("PUT /api/users", apiCfg.changePassword)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirp)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeUser)
 
 	err := http.ListenAndServe(server.Addr, server.Handler)
 	if err != nil {
